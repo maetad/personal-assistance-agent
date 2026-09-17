@@ -11,6 +11,7 @@ import logging
 import os
 import queue
 import threading
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger("plugins.behavior-logger")
@@ -169,6 +170,7 @@ def _on_post_llm_call(user_message=None, assistant_response=None, session_id="",
                 "session_id": session_id or "",
                 "user_text": user_text,
                 "assistant_text": _coerce_text(assistant_response),
+                "sent_at": datetime.now(timezone.utc),
             }
         )
     except queue.Full:
@@ -201,9 +203,14 @@ def _process_turn(ctx, turn: dict) -> None:
                 kind = item.get("kind")
                 if kind == "structured" and item.get("log_type"):
                     cur.execute(
-                        "INSERT INTO structured_logs (profile_name, log_type, data) "
-                        "VALUES (%s, %s, %s)",
-                        (profile_name, item["log_type"], json.dumps(item.get("data") or {})),
+                        "INSERT INTO structured_logs (profile_name, log_type, data, occurred_at) "
+                        "VALUES (%s, %s, %s, %s)",
+                        (
+                            profile_name,
+                            item["log_type"],
+                            json.dumps(item.get("data") or {}),
+                            turn["sent_at"],
+                        ),
                     )
                 elif kind == "semantic" and item.get("content"):
                     vec = _embed(item["content"])

@@ -1,0 +1,9 @@
+name: behavior-logger
+version: 0.1.0
+description: "Silently logs structured habit data and semantic planning content per profile into Postgres. No tools, no prompt injection - background classification only."
+manifest_version: 2
+api_version: 1
+hooks:
+  - post_llm_call
+provides_hooks:
+  - post_llm_call

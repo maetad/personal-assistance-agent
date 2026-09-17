@@ -1,0 +1,9 @@
+# Storage
+/data
+/hermes-home
+
+# Secret
+.env
+
+# LLM
+.claude/*.local.json

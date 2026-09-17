@@ -2,6 +2,12 @@
 CONTAINER ?= hermes-agent
 PLUGIN ?= behavior-logger
 
+# Default model config applied to new profiles (override on the command line,
+# e.g. make create-profile NAME=dad TOKEN=... MODEL_PROVIDER=openrouter MODEL_NAME=foo/bar)
+MODEL_PROVIDER ?= nous
+MODEL_NAME ?= upstage/solar-pro4:free
+MODEL_BASE_URL ?= https://inference-api.nousresearch.com/v1
+
 .PHONY: help up down status create-profile list-profiles start-gateway stop-gateway logs install-plugin
 
 # Default command: display usage guide
@@ -14,7 +20,8 @@ help:
 	@echo "  make down                             Stop Docker stack"
 	@echo "  make status                           Check running containers & profiles"
 	@echo "  make list-profiles                    List active profiles"
-	@echo "  make create-profile NAME=... TOKEN=.. Create & configure a profile"
+	@echo "  make create-profile NAME=... TOKEN=.. Create a profile set up like 'pan'"
+	@echo "                        [MODEL_PROVIDER=nous MODEL_NAME=upstage/solar-pro4:free MODEL_BASE_URL=...]"
 	@echo "  make install-plugin NAME=...          Install plugins/behavior-logger into a profile"
 	@echo "  make start-gateway NAME=...           Start gateway for a profile"
 	@echo "  make stop-gateway NAME=...            Stop gateway for a profile"
@@ -48,9 +55,17 @@ endif
 	docker exec -it $(CONTAINER) hermes profile create $(NAME)
 	@echo "--> Setting Telegram Bot Token..."
 	docker exec -it $(CONTAINER) hermes -p $(NAME) config set TELEGRAM_BOT_TOKEN "$(TOKEN)"
-	@echo "--> Starting gateway service..."
-	docker exec -it $(CONTAINER) hermes -p $(NAME) gateway start
-	@echo "--> Profile '$(NAME)' successfully created and gateway started!"
+	@echo "--> Configuring model ($(MODEL_PROVIDER) / $(MODEL_NAME), matching 'pan')..."
+	docker exec -it $(CONTAINER) hermes -p $(NAME) config set model.provider $(MODEL_PROVIDER)
+	docker exec -it $(CONTAINER) hermes -p $(NAME) config set model.default $(MODEL_NAME)
+	docker exec -it $(CONTAINER) hermes -p $(NAME) config set model.base_url $(MODEL_BASE_URL)
+	docker exec -it $(CONTAINER) hermes -p $(NAME) config set agent.reasoning_effort medium
+	docker exec -it $(CONTAINER) hermes -p $(NAME) config set agent.max_tokens 4000
+	@echo "--> Logging in to $(MODEL_PROVIDER) (follow the browser/device prompt)..."
+	docker exec -it $(CONTAINER) hermes -p $(NAME) auth add $(MODEL_PROVIDER)
+	@echo "--> Installing behavior-logger plugin and starting gateway..."
+	$(MAKE) install-plugin NAME=$(NAME) CONTAINER=$(CONTAINER)
+	@echo "--> Profile '$(NAME)' successfully created, configured like 'pan', and gateway started!"
 
 # Copies plugins/$(PLUGIN) from this repo into a profile's plugin dir, enables it, and
 # restarts that profile's gateway to pick it up.

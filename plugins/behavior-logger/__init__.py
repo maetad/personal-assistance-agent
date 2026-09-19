@@ -1,7 +1,8 @@
 """behavior-logger: silently classifies each conversation turn and writes structured habit
-logs / semantic planning notes into Postgres. Registers only a lifecycle hook (post_llm_call)
-- no tool, no system-prompt section, no memory-provider registration - so the main chat LLM
-is never aware this exists and never sees anything injected back into its context.
+logs / semantic planning notes into Postgres via a lifecycle hook (post_llm_call) - no
+system-prompt section, no memory-provider registration, so classification itself stays
+invisible to the main chat LLM. It also registers two chat-facing tools, add_fact_key and
+list_fact_keys, so a profile can manage its Fact Key taxonomy by asking for it directly.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -163,6 +165,88 @@ def _db_connect():
     return psycopg.connect(dsn)
 
 
+def _get_active_profile_name() -> str:
+    from hermes_cli.profiles import get_active_profile_name
+
+    return get_active_profile_name()
+
+
+FACT_KEY_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+
+ADD_FACT_KEY_SCHEMA = {
+    "name": "add_fact_key",
+    "description": (
+        "Add a new Fact Key to this profile's taxonomy, so the background classifier can "
+        "track it as a single current value (e.g. weight, sleep_hours) on future turns "
+        "instead of only ever logging observations. Commits immediately - no confirmation step."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "fact_key": {
+                "type": "string",
+                "description": "Short snake_case identifier for the Fact Key, e.g. 'weight' or 'sleep_hours'.",
+            }
+        },
+        "required": ["fact_key"],
+        "additionalProperties": False,
+    },
+}
+
+LIST_FACT_KEYS_SCHEMA = {
+    "name": "list_fact_keys",
+    "description": "List this profile's current Fact Keys - the closed-set taxonomy the classifier matches against.",
+    "parameters": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+
+
+def _normalize_fact_key(raw: Any) -> Optional[str]:
+    """Lowercase/strip a fact_key candidate; None if it isn't a snake_case identifier."""
+    if not isinstance(raw, str):
+        return None
+    candidate = raw.strip().lower()
+    if not FACT_KEY_RE.match(candidate):
+        return None
+    return candidate
+
+
+def _handle_add_fact_key(args: dict, **_kw) -> str:
+    from tools.registry import tool_result
+
+    fact_key = _normalize_fact_key(args.get("fact_key"))
+    if not fact_key:
+        return tool_result(
+            {"success": False, "error": "fact_key must be a snake_case identifier, e.g. 'weight'"}
+        )
+
+    _ensure_schema()
+    profile_name = _get_active_profile_name()
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO fact_taxonomy (profile_name, fact_key) VALUES (%s, %s) "
+                "ON CONFLICT (profile_name, fact_key) DO NOTHING",
+                (profile_name, fact_key),
+            )
+        conn.commit()
+    return tool_result({"success": True, "fact_key": fact_key})
+
+
+def _handle_list_fact_keys(args: dict, **_kw) -> str:
+    from tools.registry import tool_result
+
+    _ensure_schema()
+    profile_name = _get_active_profile_name()
+    with _db_connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT fact_key FROM fact_taxonomy WHERE profile_name = %s ORDER BY fact_key",
+                (profile_name,),
+            )
+            fact_keys = [row[0] for row in cur.fetchall()]
+    return tool_result({"success": True, "fact_keys": fact_keys})
+
+
 def _ensure_schema() -> None:
     if _schema_ready.is_set():
         return
@@ -220,9 +304,7 @@ def _on_post_llm_call(user_message=None, assistant_response=None, session_id="",
 
 
 def _process_turn(ctx, turn: dict) -> None:
-    from hermes_cli.profiles import get_active_profile_name
-
-    profile_name = get_active_profile_name()
+    profile_name = _get_active_profile_name()
 
     with _db_connect() as conn:
         with conn.cursor() as cur:
@@ -314,4 +396,12 @@ def _ensure_worker(ctx) -> None:
 
 def register(ctx) -> None:
     ctx.register_hook("post_llm_call", _on_post_llm_call)
+    ctx.register_tool(
+        name="add_fact_key", toolset="behavior-logger", schema=ADD_FACT_KEY_SCHEMA,
+        handler=_handle_add_fact_key, description=ADD_FACT_KEY_SCHEMA["description"], emoji="🏷️",
+    )
+    ctx.register_tool(
+        name="list_fact_keys", toolset="behavior-logger", schema=LIST_FACT_KEYS_SCHEMA,
+        handler=_handle_list_fact_keys, description=LIST_FACT_KEYS_SCHEMA["description"], emoji="📋",
+    )
     _ensure_worker(ctx)

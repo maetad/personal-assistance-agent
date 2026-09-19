@@ -49,6 +49,49 @@ class VecLiteralTests(unittest.TestCase):
         self.assertEqual(bl._vec_literal([1.0, -0.5]), "[1.00000000,-0.50000000]")
 
 
+class BuildClassifySchemaTests(unittest.TestCase):
+    def test_no_taxonomy_omits_fact_key_property(self):
+        schema = bl._build_classify_schema([])
+        item_props = schema["properties"]["items"]["items"]["properties"]
+        self.assertNotIn("fact_key", item_props)
+
+    def test_taxonomy_constrains_fact_key_to_closed_set(self):
+        schema = bl._build_classify_schema(["weight", "blood_pressure"])
+        fact_key_prop = schema["properties"]["items"]["items"]["properties"]["fact_key"]
+        self.assertEqual(fact_key_prop["enum"], ["weight", "blood_pressure"])
+
+
+class ResolveFactKeyTests(unittest.TestCase):
+    def test_matches_taxonomy(self):
+        item = {
+            "kind": "structured",
+            "log_type": "weight",
+            "fact_key": "weight",
+            "data": {"value": 70},
+        }
+        self.assertEqual(bl._resolve_fact_key(item, ["weight", "sleep"]), "weight")
+
+    def test_missing_fact_key_returns_none(self):
+        item = {"kind": "structured", "log_type": "workout"}
+        self.assertIsNone(bl._resolve_fact_key(item, ["weight"]))
+
+    def test_fact_key_not_in_taxonomy_returns_none(self):
+        item = {"kind": "structured", "log_type": "weight", "fact_key": "made_up"}
+        self.assertIsNone(bl._resolve_fact_key(item, ["weight"]))
+
+    def test_empty_taxonomy_returns_none(self):
+        item = {"kind": "structured", "log_type": "weight", "fact_key": "weight"}
+        self.assertIsNone(bl._resolve_fact_key(item, []))
+
+    def test_missing_data_returns_none(self):
+        item = {"kind": "structured", "log_type": "weight", "fact_key": "weight"}
+        self.assertIsNone(bl._resolve_fact_key(item, ["weight"]))
+
+    def test_empty_data_returns_none(self):
+        item = {"kind": "structured", "log_type": "weight", "fact_key": "weight", "data": {}}
+        self.assertIsNone(bl._resolve_fact_key(item, ["weight"]))
+
+
 class OnPostLlmCallTests(unittest.TestCase):
     def setUp(self):
         _drain(bl._turn_queue)

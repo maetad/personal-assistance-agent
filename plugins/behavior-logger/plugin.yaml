@@ -1,12 +1,15 @@
 name: behavior-logger
-version: 0.2.0
-description: "Silently logs structured habit data and semantic planning content per profile into Postgres. Also registers add_fact_key/list_fact_keys so a profile can manage its Fact Key taxonomy via chat."
+version: 0.3.0
+description: "Logs structured habit data and semantic planning content per profile into Postgres, and surfaces pending Fact Key Proposals to the user via add_fact_key/list_fact_keys/decline_fact_key_proposal."
 manifest_version: 2
 api_version: 1
 hooks:
   - post_llm_call
+  - pre_llm_call
 provides_hooks:
   - post_llm_call
+  - pre_llm_call
 provides_tools:
   - add_fact_key
   - list_fact_keys
+  - decline_fact_key_proposal

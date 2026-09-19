@@ -17,5 +17,5 @@ The curated, per-profile identifier a Fact is upserted against (e.g. `weight`, `
 _Avoid_: log_type (when talking about Facts), tag, category
 
 **Fact Key Proposal**:
-A suggested new Fact Key raised when the classifier notices, on its own, that an Observation looks Fact-shaped but doesn't match any existing Fact Key — not yet implemented. Unlike an explicit `add_fact_key` chat request, this is unprompted, so it must be surfaced to the user for confirmation on a later turn; only becomes a real Fact Key if confirmed.
+A suggested new Fact Key raised when the classifier notices, on its own, that an Observation looks Fact-shaped but doesn't match any existing Fact Key. Stored in `fact_key_proposals` with a `pending`/`confirmed`/`declined` status. Unlike an explicit `add_fact_key` chat request, this is unprompted, so it's surfaced to the user for confirmation on a later turn (via a `pre_llm_call` context injection) rather than the turn that raised it; only becomes a real Fact Key if confirmed via `add_fact_key`, and `decline_fact_key_proposal` leaves the taxonomy unchanged.
 _Avoid_: pending fact, unmatched observation

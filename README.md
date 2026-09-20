@@ -94,9 +94,29 @@ docker compose up -d webui-pan
 Known upstream limitation ([#681](https://github.com/nesquena/hermes-webui/issues/681)):
 tool calls made from a webui chat session run inside the *webui* container,
 using its own copy of Hermes Agent, not the `hermes` gateway container.
-`webui.Dockerfile` installs the same `psycopg`/`sentence-transformers` deps
-as the main `Dockerfile` so `behavior-logger` tool calls (e.g.
-`add_fact_key`) still work from the web chat, not just from Telegram/CLI.
+hermes-webui has no agent baked in — at every startup it stages whatever
+agent source it finds mounted and `uv pip install`s it into a fresh venv,
+so:
+
+- `hermes` shares its `/opt/hermes` (agent source) with every `webui-<name>`
+  container read-only via the `hermes-agent-src` named volume, so webui gets
+  full functionality (model auto-detection, personality routing, CLI session
+  imports) instead of degrading to a bare chat client. **After rebuilding the
+  `hermes` image**, run `docker compose down && docker volume rm
+  <project>_hermes-agent-src` before `up` — Docker only seeds this volume
+  from the image on first creation, so a stale volume silently keeps the old
+  agent source.
+- `webui.Dockerfile` patches hermes-webui's entrypoint to also install
+  `psycopg`/`sentence-transformers` into that fresh venv (its own
+  `pyproject.toml` install only covers hermes-agent's own deps), so
+  `behavior-logger` tool calls (e.g. `add_fact_key`) still work from the web
+  chat, not just from Telegram/CLI.
+- Each `webui-<name>` container's UID/GID is pinned via `WANTED_UID`/
+  `WANTED_GID` (`10000`, matching `hermes`'s runtime user — check yours with
+  `docker exec hermes-agent id`) so it can read/write its bind-mounted
+  profile and state directories. Without this it falls back to its
+  image-default `1024` and fails to start ("Permission denied" on its state
+  dir).
 
 ## Notes
 

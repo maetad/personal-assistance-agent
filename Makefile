@@ -1,3 +1,6 @@
+# read -p needs bash, not the POSIX sh that's /bin/sh on some systems.
+SHELL := /bin/bash
+
 # Name of the Hermes container as defined in docker-compose.yml
 CONTAINER ?= hermes-agent
 PLUGIN ?= behavior-logger
@@ -20,7 +23,9 @@ help:
 	@echo "  make down                             Stop Docker stack"
 	@echo "  make status                           Check running containers & profiles"
 	@echo "  make list-profiles                    List active profiles"
-	@echo "  make create-profile NAME=... TOKEN=.. Create a profile set up like 'pan'"
+	@echo "  make create-profile                   Create a profile set up like 'pan' (prompts for"
+	@echo "                                         Name/Token/WebUI password, or pass NAME=... TOKEN=..."
+	@echo "                                         WEBUI_PASSWORD=... to skip prompts)"
 	@echo "                        [MODEL_PROVIDER=nous MODEL_NAME=upstage/solar-pro4:free MODEL_BASE_URL=...]"
 	@echo "  make install-plugin NAME=...          Install plugins/behavior-logger into a profile"
 	@echo "  make start-gateway NAME=...           Start gateway for a profile"
@@ -44,28 +49,36 @@ status:
 list-profiles:
 	docker exec -it $(CONTAINER) hermes profile list
 
+# NAME/TOKEN/WEBUI_PASSWORD can be passed on the command line (make create-profile
+# NAME=dad TOKEN=... WEBUI_PASSWORD=...) to skip prompts, e.g. for scripting.
 create-profile:
-ifndef NAME
-	$(error NAME is missing. Usage: make create-profile NAME=dad TOKEN=123456:ABC...)
-endif
-ifndef TOKEN
-	$(error TOKEN is missing. Usage: make create-profile NAME=dad TOKEN=123456:ABC...)
-endif
-	@echo "--> Creating Hermes profile '$(NAME)'..."
-	docker exec -it $(CONTAINER) hermes profile create $(NAME)
-	@echo "--> Setting Telegram Bot Token..."
-	docker exec -it $(CONTAINER) hermes -p $(NAME) config set TELEGRAM_BOT_TOKEN "$(TOKEN)"
-	@echo "--> Configuring model ($(MODEL_PROVIDER) / $(MODEL_NAME), matching 'pan')..."
-	docker exec -it $(CONTAINER) hermes -p $(NAME) config set model.provider $(MODEL_PROVIDER)
-	docker exec -it $(CONTAINER) hermes -p $(NAME) config set model.default $(MODEL_NAME)
-	docker exec -it $(CONTAINER) hermes -p $(NAME) config set model.base_url $(MODEL_BASE_URL)
-	docker exec -it $(CONTAINER) hermes -p $(NAME) config set agent.reasoning_effort medium
-	docker exec -it $(CONTAINER) hermes -p $(NAME) config set agent.max_tokens 4000
-	@echo "--> Logging in to $(MODEL_PROVIDER) (follow the browser/device prompt)..."
-	docker exec -it $(CONTAINER) hermes -p $(NAME) auth add $(MODEL_PROVIDER)
-	@echo "--> Installing behavior-logger plugin and starting gateway..."
-	$(MAKE) install-plugin NAME=$(NAME) CONTAINER=$(CONTAINER)
-	@echo "--> Profile '$(NAME)' successfully created, configured like 'pan', and gateway started!"
+	@NAME="$(NAME)"; TOKEN="$(TOKEN)"; WEBUI_PASSWORD="$(WEBUI_PASSWORD)"; \
+	[ -n "$$NAME" ] || read -p "Name: " NAME; \
+	[ -n "$$TOKEN" ] || read -p "Telegram token: " TOKEN; \
+	[ -n "$$WEBUI_PASSWORD" ] || read -p "WebUI password: " WEBUI_PASSWORD; \
+	echo "--> Creating Hermes profile '$$NAME'..."; \
+	docker exec -it $(CONTAINER) hermes profile create $$NAME; \
+	echo "--> Setting Telegram Bot Token..."; \
+	docker exec -it $(CONTAINER) hermes -p $$NAME config set TELEGRAM_BOT_TOKEN "$$TOKEN"; \
+	echo "--> Configuring model ($(MODEL_PROVIDER) / $(MODEL_NAME), matching 'pan')..."; \
+	docker exec -it $(CONTAINER) hermes -p $$NAME config set model.provider $(MODEL_PROVIDER); \
+	docker exec -it $(CONTAINER) hermes -p $$NAME config set model.default $(MODEL_NAME); \
+	docker exec -it $(CONTAINER) hermes -p $$NAME config set model.base_url $(MODEL_BASE_URL); \
+	docker exec -it $(CONTAINER) hermes -p $$NAME config set agent.reasoning_effort medium; \
+	docker exec -it $(CONTAINER) hermes -p $$NAME config set agent.max_tokens 4000; \
+	echo "--> Logging in to $(MODEL_PROVIDER) (follow the browser/device prompt)..."; \
+	docker exec -it $(CONTAINER) hermes -p $$NAME auth add $(MODEL_PROVIDER); \
+	echo "--> Installing behavior-logger plugin and starting gateway..."; \
+	$(MAKE) install-plugin NAME=$$NAME CONTAINER=$(CONTAINER); \
+	echo "--> Setting hermes-webui password for '$$NAME'..."; \
+	NAME_UPPER=$$(echo $$NAME | tr '[:lower:]' '[:upper:]'); \
+	if grep -q "^HERMES_WEBUI_PASSWORD_$$NAME_UPPER=" .env 2>/dev/null; then \
+		sed -i "s/^HERMES_WEBUI_PASSWORD_$$NAME_UPPER=.*/HERMES_WEBUI_PASSWORD_$$NAME_UPPER=$$WEBUI_PASSWORD/" .env; \
+	else \
+		echo "HERMES_WEBUI_PASSWORD_$$NAME_UPPER=$$WEBUI_PASSWORD" >> .env; \
+	fi; \
+	echo "--> Profile '$$NAME' successfully created, configured like 'pan', and gateway started!"; \
+	echo "--> To expose it in hermes-webui, copy the webui-pan block in docker-compose.yaml to webui-$$NAME (see README)."
 
 # Copies plugins/$(PLUGIN) from this repo into a profile's plugin dir, enables it, and
 # restarts that profile's gateway to pick it up.

@@ -45,3 +45,22 @@ services:
       - 8080:8080
     depends_on:
       - db
+  # One webui-<profile> service per Hermes profile, each bind-mounted to only
+  # that profile's directory so it's the isolation boundary (not a shared
+  # login) - see README for the pattern to add a new profile's block.
+  webui-pan:
+    build:
+      context: .
+      dockerfile: webui.Dockerfile
+    container_name: hermes-webui-pan
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    volumes:
+      - ./hermes-home/profiles/pan:/opt/data/profiles/pan
+      - ./hermes-home/webui/pan:/opt/data/webui
+    environment:
+      - HERMES_HOME=/opt/data
+      - HERMES_WEBUI_STATE_DIR=/opt/data/webui
+      - HERMES_WEBUI_HOST=0.0.0.0
+      - HERMES_WEBUI_PASSWORD=${HERMES_WEBUI_PASSWORD_PAN:?set HERMES_WEBUI_PASSWORD_PAN in .env}

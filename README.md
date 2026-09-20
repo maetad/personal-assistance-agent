@@ -67,6 +67,37 @@ docker exec -it hermes-agent hermes -p pan plugins doctor behavior-logger
 plugin on first turn (idempotent, advisory-lock guarded) — no manual SQL
 needed.
 
+## Web UI (hermes-webui, one per profile)
+
+[hermes-webui](https://github.com/nesquena/hermes-webui) gives a full
+chat/session/workspace browser UI, separate from the ops-focused dashboard
+on port 9119 (profile/gateway management, kept as-is). It isn't a REST
+client — it imports Hermes Agent's Python package directly and needs the
+same `HERMES_HOME` layout, and its only auth is one shared password per
+running instance. So instead of one shared webui with a profile switcher,
+there's **one `webui-<name>` container per profile**, each bind-mounted to
+only that profile's directory (`./hermes-home/profiles/<name>`) and nothing
+else. The container's filesystem view *is* the isolation boundary — a
+profile's webui container can't see any other profile's data — backed up by
+that profile's own password (`HERMES_WEBUI_PASSWORD_<NAME>` in `.env`).
+
+To add webui access for a new profile, copy the `webui-pan` block in
+`docker-compose.yaml`, rename it (`webui-<name>`, container name, volume
+paths), pick the next free host port (8787 is taken by `pan`; use 8788,
+8789, ...), and add `HERMES_WEBUI_PASSWORD_<NAME>` to `.env`.
+
+```bash
+docker compose up -d webui-pan
+# → http://localhost:8787, log in with HERMES_WEBUI_PASSWORD_PAN
+```
+
+Known upstream limitation ([#681](https://github.com/nesquena/hermes-webui/issues/681)):
+tool calls made from a webui chat session run inside the *webui* container,
+using its own copy of Hermes Agent, not the `hermes` gateway container.
+`webui.Dockerfile` installs the same `psycopg`/`sentence-transformers` deps
+as the main `Dockerfile` so `behavior-logger` tool calls (e.g.
+`add_fact_key`) still work from the web chat, not just from Telegram/CLI.
+
 ## Notes
 
 - The Postgres password and dashboard password now come from `.env` (see

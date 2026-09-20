@@ -11,6 +11,14 @@ services:
       - "9119:9119"   # dashboard (only reached when HERMES_DASHBOARD=1)
     volumes:
       - ./hermes-home:/opt/data
+      # Shared read-only with webui-<profile> containers so hermes-webui can
+      # build its own venv from the agent's actual source/pyproject.toml
+      # instead of running in reduced-functionality mode (no model
+      # auto-detection/personality routing/CLI sessions). Docker seeds this
+      # named volume from this image's /opt/hermes on first `up` only - after
+      # rebuilding this image, `docker compose down && docker volume rm
+      # <project>_hermes-agent-src` before `up` to pick up the change.
+      - hermes-agent-src:/opt/hermes
     environment:
       - HERMES_DASHBOARD=1
       - HERMES_DASHBOARD_BASIC_AUTH_USERNAME=${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-admin}
@@ -59,8 +67,19 @@ services:
     volumes:
       - ./hermes-home/profiles/pan:/opt/data/profiles/pan
       - ./hermes-home/webui/pan:/opt/data/webui
+      - hermes-agent-src:/home/hermeswebui/.hermes/hermes-agent:ro
     environment:
       - HERMES_HOME=/opt/data
       - HERMES_WEBUI_STATE_DIR=/opt/data/webui
       - HERMES_WEBUI_HOST=0.0.0.0
       - HERMES_WEBUI_PASSWORD=${HERMES_WEBUI_PASSWORD_PAN:?set HERMES_WEBUI_PASSWORD_PAN in .env}
+      # Only /opt/data/profiles/<name> and /opt/data/webui are bind-mounted (not
+      # /opt/data itself), so hermes-webui's own UID auto-detection can't see the
+      # host ownership and falls back to its image-default 1024. Pin it explicitly
+      # to match the 'hermes' container's runtime user (uid=10000 gid=10000,
+      # `docker exec hermes-agent id`) so it can read/write the bind-mounted dirs.
+      - WANTED_UID=10000
+      - WANTED_GID=10000
+
+volumes:
+  hermes-agent-src:

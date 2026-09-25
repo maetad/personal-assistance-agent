@@ -1,0 +1,3 @@
+name: qr-code
+version: 0.1.0
+description: "Generates a printable QR code PNG from text via the /qr slash command."

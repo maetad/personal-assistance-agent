@@ -1,0 +1,10 @@
+name: device-watch
+version: 0.1.0
+description: "Watches devices on the LAN by IP and sends a Telegram notification when one connects or disconnects, via watch_device/unwatch_device/list_watched_devices."
+manifest_version: 2
+api_version: 1
+provides_tools:
+  - watch_device
+  - unwatch_device
+  - list_watched_devices
+  - list_connected_devices

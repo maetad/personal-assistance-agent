@@ -217,14 +217,17 @@ class FetchRouterHostnamesTests(unittest.TestCase):
             devices = [FakeDevice("192.168.0.42", "phone"), FakeDevice("192.168.0.7", "")]
 
         class FakeRouter:
+            # ponytail: not every tplinkrouterc6u client class (e.g. TplinkRouterSG, used
+            # by newer Archer BE-series routers) implements the context-manager protocol,
+            # so we drive authorize()/get_status()/logout() explicitly instead of `with`.
+            def authorize(self):
+                pass
+
             def get_status(self):
                 return FakeStatus()
 
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *_a):
-                return False
+            def logout(self):
+                pass
 
         dw._get_router_client = lambda base_url, password, username: FakeRouter()
         ctx = unittest.mock.Mock()
@@ -240,6 +243,25 @@ class FetchRouterHostnamesTests(unittest.TestCase):
         ctx = unittest.mock.Mock()
         ctx.get_config.side_effect = lambda key, default=None: {"router_password": "secret"}.get(key, default)
         self.assertEqual(dw._fetch_router_hostnames(ctx, "192.168.0.0/24"), {})
+
+    def test_logs_out_even_when_get_status_raises(self):
+        calls = []
+
+        class FakeRouter:
+            def authorize(self):
+                calls.append("authorize")
+
+            def get_status(self):
+                raise RuntimeError("boom")
+
+            def logout(self):
+                calls.append("logout")
+
+        dw._get_router_client = lambda base_url, password, username: FakeRouter()
+        ctx = unittest.mock.Mock()
+        ctx.get_config.side_effect = lambda key, default=None: {"router_password": "secret"}.get(key, default)
+        self.assertEqual(dw._fetch_router_hostnames(ctx, "192.168.0.0/24"), {})
+        self.assertEqual(calls, ["authorize", "logout"])
 
 
 class SweepSubnetTests(unittest.TestCase):

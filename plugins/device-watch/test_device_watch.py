@@ -160,6 +160,24 @@ class ResolveSubnetTests(unittest.TestCase):
         self.assertEqual(dw._resolve_subnet(None), "10.0.0.0/24")
 
 
+class ResolveHostnameTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_gethostbyaddr = dw.socket.gethostbyaddr
+
+    def tearDown(self):
+        dw.socket.gethostbyaddr = self._orig_gethostbyaddr
+
+    def test_returns_short_hostname_on_success(self):
+        dw.socket.gethostbyaddr = lambda ip: ("phone.lan", [], [ip])
+        self.assertEqual(dw._resolve_hostname("192.168.0.42"), "phone")
+
+    def test_returns_none_when_lookup_fails(self):
+        def _raise(ip):
+            raise dw.socket.herror("unknown host")
+        dw.socket.gethostbyaddr = _raise
+        self.assertIsNone(dw._resolve_hostname("192.168.0.42"))
+
+
 class SweepSubnetTests(unittest.TestCase):
     def setUp(self):
         self._orig_check_online = dw._check_online
@@ -187,12 +205,15 @@ class ListConnectedDevicesHandlerTests(unittest.TestCase):
         dw._watches_path = lambda: self._path
         self._orig_sweep = dw._sweep_subnet
         self._orig_resolve = dw._resolve_subnet
+        self._orig_resolve_hostname = dw._resolve_hostname
         dw._resolve_subnet = lambda ctx: "192.168.0.0/24"
+        dw._resolve_hostname = lambda ip: None
 
     def tearDown(self):
         dw._watches_path = self._orig_path_fn
         dw._sweep_subnet = self._orig_sweep
         dw._resolve_subnet = self._orig_resolve
+        dw._resolve_hostname = self._orig_resolve_hostname
         self._tmpdir.cleanup()
 
     def test_marks_watched_online_device(self):
@@ -201,14 +222,21 @@ class ListConnectedDevicesHandlerTests(unittest.TestCase):
         result = json.loads(dw._handle_list_connected_devices({}))
         self.assertTrue(result["success"])
         by_ip = {d["ip"]: d for d in result["devices"]}
-        self.assertEqual(by_ip["192.168.0.42"], {"ip": "192.168.0.42", "online": True, "watched": True, "name": "phone"})
-        self.assertEqual(by_ip["192.168.0.7"], {"ip": "192.168.0.7", "online": True, "watched": False, "name": None})
+        self.assertEqual(by_ip["192.168.0.42"], {"ip": "192.168.0.42", "online": True, "watched": True, "name": "phone", "hostname": None})
+        self.assertEqual(by_ip["192.168.0.7"], {"ip": "192.168.0.7", "online": True, "watched": False, "name": None, "hostname": None})
 
     def test_includes_offline_watched_device_not_seen_in_sweep(self):
         dw._save_watches({"phone": {"ip": "192.168.0.42", "online": True}})
         dw._sweep_subnet = lambda subnet: []
         result = json.loads(dw._handle_list_connected_devices({}))
-        self.assertEqual(result["devices"], [{"ip": "192.168.0.42", "online": False, "watched": True, "name": "phone"}])
+        self.assertEqual(result["devices"], [{"ip": "192.168.0.42", "online": False, "watched": True, "name": "phone", "hostname": None}])
+
+    def test_resolves_hostname_for_online_devices(self):
+        dw._save_watches({"phone": {"ip": "192.168.0.42", "online": None}})
+        dw._sweep_subnet = lambda subnet: ["192.168.0.42"]
+        dw._resolve_hostname = lambda ip: "phone" if ip == "192.168.0.42" else None
+        result = json.loads(dw._handle_list_connected_devices({}))
+        self.assertEqual(result["devices"][0]["hostname"], "phone")
 
     def test_no_subnet_available_returns_error(self):
         dw._resolve_subnet = lambda ctx: None

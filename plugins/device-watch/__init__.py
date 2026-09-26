@@ -14,6 +14,7 @@ from __future__ import annotations
 import ipaddress
 import json
 import logging
+import socket
 import subprocess
 import threading
 import time
@@ -74,6 +75,20 @@ def _check_online(ip: str, timeout: int = PING_TIMEOUT_SECONDS) -> bool:
     except Exception:
         logger.exception("device-watch: ping failed for %s", ip)
         return False
+
+
+def _resolve_hostname(ip: str, timeout: float = 1.0) -> Optional[str]:
+    """Reverse DNS via the router's local DNS proxy, which resolves LAN clients' DHCP
+    hostnames on most consumer routers (including TP-Link) - same source the Tether app uses."""
+    old_timeout = socket.getdefaulttimeout()
+    socket.setdefaulttimeout(timeout)
+    try:
+        hostname = socket.gethostbyaddr(ip)[0]
+        return hostname.split(".")[0] or None
+    except Exception:
+        return None
+    finally:
+        socket.setdefaulttimeout(old_timeout)
 
 
 def _guess_subnet(watches: dict) -> Optional[str]:
@@ -199,8 +214,9 @@ LIST_CONNECTED_DEVICES_SCHEMA = {
     "name": "list_connected_devices",
     "description": (
         "Ping-sweep the LAN subnet for devices currently online, and flag which ones are on the "
-        "watch list (with their watched name). Also includes any watched device that's currently "
-        "offline. Takes a few seconds. Needs a subnet - configured via "
+        "watch list (with their watched name). Includes a best-effort hostname via reverse DNS "
+        "(works when the router's DHCP server publishes client hostnames; null otherwise). Also "
+        "includes any watched device that's currently offline. Takes a few seconds. Needs a subnet - configured via "
         "plugins.entries.device-watch.settings.subnet (e.g. '192.168.0.0/24'), or guessed from an "
         "already-watched device's IP if none is set."
     ),
@@ -264,12 +280,12 @@ def _handle_list_connected_devices(args: dict, **_kw) -> str:
     watches = _load_watches()
     ip_to_name = {watch["ip"]: name for name, watch in watches.items()}
     devices = [
-        {"ip": ip, "online": True, "watched": ip in ip_to_name, "name": ip_to_name.get(ip)}
+        {"ip": ip, "online": True, "watched": ip in ip_to_name, "name": ip_to_name.get(ip), "hostname": _resolve_hostname(ip)}
         for ip in online_ips
     ]
     seen_ips = set(online_ips)
     devices.extend(
-        {"ip": watch["ip"], "online": False, "watched": True, "name": name}
+        {"ip": watch["ip"], "online": False, "watched": True, "name": name, "hostname": None}
         for name, watch in watches.items() if watch["ip"] not in seen_ips
     )
     return tool_result({"success": True, "subnet": subnet, "devices": devices})

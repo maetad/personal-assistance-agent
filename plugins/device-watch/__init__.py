@@ -91,6 +91,45 @@ def _resolve_hostname(ip: str, timeout: float = 1.0) -> Optional[str]:
         socket.setdefaulttimeout(old_timeout)
 
 
+def _router_base_url(ctx, subnet: Optional[str]) -> Optional[str]:
+    """Operator-configured router URL (``plugins.entries.device-watch.settings.router_host``)
+    wins; otherwise guessed as the subnet's first host (the usual home-router address)."""
+    configured = ctx.get_config("router_host", None) if ctx is not None else None
+    if configured:
+        return configured
+    if not subnet:
+        return None
+    network = ipaddress.ip_network(subnet, strict=False)
+    return f"http://{network.network_address + 1}"
+
+
+def _get_router_client(base_url: str, password: str, username: str):
+    from tplinkrouterc6u import TplinkRouterProvider  # lazy: optional dep, only needed here
+
+    return TplinkRouterProvider.get_client(base_url, password, username)
+
+
+def _fetch_router_hostnames(ctx, subnet: Optional[str]) -> dict:
+    """Best-effort {ip: hostname} straight from the router's own client list - the same
+    encrypted local API the TP-Link Tether app uses, via the tplinkrouterc6u library. Empty
+    dict when no router_password is configured, or on any failure (never raises)."""
+    password = ctx.get_config("router_password", None) if ctx is not None else None
+    if not password:
+        return {}
+    username = ctx.get_config("router_username", "admin") if ctx is not None else "admin"
+    base_url = _router_base_url(ctx, subnet)
+    if not base_url:
+        return {}
+    try:
+        router = _get_router_client(base_url, password, username)
+        with router:
+            status = router.get_status()
+            return {str(device.ipaddr): device.hostname for device in status.devices if device.hostname}
+    except Exception:
+        logger.exception("device-watch: router API hostname fetch failed")
+        return {}
+
+
 def _guess_subnet(watches: dict) -> Optional[str]:
     """A /24 derived from the first watched device's IP - used when no subnet is configured."""
     for watch in watches.values():
@@ -214,9 +253,11 @@ LIST_CONNECTED_DEVICES_SCHEMA = {
     "name": "list_connected_devices",
     "description": (
         "Ping-sweep the LAN subnet for devices currently online, and flag which ones are on the "
-        "watch list (with their watched name). Includes a best-effort hostname via reverse DNS "
-        "(works when the router's DHCP server publishes client hostnames; null otherwise). Also "
-        "includes any watched device that's currently offline. Takes a few seconds. Needs a subnet - configured via "
+        "watch list (with their watched name). Includes a best-effort hostname: read straight from "
+        "the router's client list when plugins.entries.device-watch.settings.router_password is set "
+        "(also router_username, default 'admin', and router_host, default guessed as the subnet's "
+        "first address), else via reverse DNS, else null. Also includes any watched device that's "
+        "currently offline. Takes a few seconds. Needs a subnet - configured via "
         "plugins.entries.device-watch.settings.subnet (e.g. '192.168.0.0/24'), or guessed from an "
         "already-watched device's IP if none is set."
     ),
@@ -277,15 +318,19 @@ def _handle_list_connected_devices(args: dict, **_kw) -> str:
     except ValueError as exc:
         return tool_result({"success": False, "error": f"invalid subnet {subnet!r}: {exc}"})
 
+    router_hostnames = _fetch_router_hostnames(_ctx, subnet)
     watches = _load_watches()
     ip_to_name = {watch["ip"]: name for name, watch in watches.items()}
     devices = [
-        {"ip": ip, "online": True, "watched": ip in ip_to_name, "name": ip_to_name.get(ip), "hostname": _resolve_hostname(ip)}
+        {
+            "ip": ip, "online": True, "watched": ip in ip_to_name, "name": ip_to_name.get(ip),
+            "hostname": router_hostnames.get(ip) or _resolve_hostname(ip),
+        }
         for ip in online_ips
     ]
     seen_ips = set(online_ips)
     devices.extend(
-        {"ip": watch["ip"], "online": False, "watched": True, "name": name, "hostname": None}
+        {"ip": watch["ip"], "online": False, "watched": True, "name": name, "hostname": router_hostnames.get(watch["ip"])}
         for name, watch in watches.items() if watch["ip"] not in seen_ips
     )
     return tool_result({"success": True, "subnet": subnet, "devices": devices})

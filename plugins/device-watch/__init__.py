@@ -122,12 +122,25 @@ def _fetch_router_hostnames(ctx, subnet: Optional[str]) -> dict:
         return {}
     try:
         router = _get_router_client(base_url, password, username)
-        with router:
-            status = router.get_status()
-            return {str(device.ipaddr): device.hostname for device in status.devices if device.hostname}
+    except Exception:
+        logger.exception("device-watch: router API client init failed")
+        return {}
+    try:
+        # ponytail: not every client class (e.g. TplinkRouterSG, used by newer Archer
+        # BE-series routers) implements the context-manager protocol, so authorize/logout
+        # explicitly rather than `with router:`. The router only allows one logged-in
+        # session, so logout must run even if get_status() fails.
+        router.authorize()
+        status = router.get_status()
+        return {str(device.ipaddr): device.hostname for device in status.devices if device.hostname}
     except Exception:
         logger.exception("device-watch: router API hostname fetch failed")
         return {}
+    finally:
+        try:
+            router.logout()
+        except Exception:
+            logger.exception("device-watch: router logout failed")
 
 
 def _guess_subnet(watches: dict) -> Optional[str]:

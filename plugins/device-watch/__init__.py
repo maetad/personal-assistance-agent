@@ -173,15 +173,28 @@ def _sweep_subnet(subnet: str) -> list:
     return sorted(online_ips, key=lambda ip: tuple(int(part) for part in ip.split(".")))
 
 
-def _update_state(name: str, watch: dict, online: bool) -> Optional[str]:
-    """Mutates ``watch['online']`` in place; returns a notify message only on a real
-    known->known transition (a first-ever check just sets the baseline, no notification)."""
+def _update_state(name: str, watch: dict, online: bool, now: Optional[float] = None) -> Optional[str]:
+    """Mutates ``watch`` in place (``online`` + ``changed_at``); returns a notify message
+    only on a real known->known transition (a first-ever check just sets the baseline, no
+    notification). A reconnect is suppressed - state still updates, just silently - if the
+    device was offline for less than ``watch['min_offline_minutes']`` (default 0 = always
+    notify), so a brief flap doesn't page you but a real outage still does. Disconnects are
+    never suppressed."""
+    if now is None:
+        now = time.time()
     previous = watch.get("online")
+    previous_changed_at = watch.get("changed_at")
     watch["online"] = online
+    watch["changed_at"] = now
     if previous is None or previous == online:
         return None
-    verb = "connected to" if online else "disconnected from"
-    return f"\U0001f4f6 {name} just {verb} the network."
+    if online:
+        min_offline_minutes = watch.get("min_offline_minutes", 0)
+        offline_seconds = now - previous_changed_at if previous_changed_at is not None else None
+        if min_offline_minutes and (offline_seconds is None or offline_seconds < min_offline_minutes * 60):
+            return None
+        return f"\U0001f4f6 {name} just connected to the network."
+    return f"\U0001f4f6 {name} just disconnected from the network."
 
 
 def _notify(message: str) -> None:
@@ -239,6 +252,14 @@ WATCH_DEVICE_SCHEMA = {
         "properties": {
             "name": {"type": "string", "description": "Short label for the device, e.g. 'moms-phone'."},
             "ip": {"type": "string", "description": "The device's IPv4 address on the LAN, e.g. '192.168.0.42'."},
+            "min_offline_minutes": {
+                "type": "integer",
+                "description": (
+                    "Suppress the reconnect notification unless the device was offline for at "
+                    "least this many minutes (e.g. 60 to ignore brief flaps). Disconnect "
+                    "notifications are never suppressed. Default 0 = always notify."
+                ),
+            },
         },
         "required": ["name", "ip"],
         "additionalProperties": False,
@@ -285,12 +306,18 @@ def _handle_watch_device(args: dict, **_kw) -> str:
     ip = str(args.get("ip") or "").strip()
     if not name or not _valid_ipv4(ip):
         return tool_result({"success": False, "error": "name and a valid IPv4 ip are required"})
+    try:
+        min_offline_minutes = int(args.get("min_offline_minutes") or 0)
+    except (TypeError, ValueError):
+        return tool_result({"success": False, "error": "min_offline_minutes must be an integer"})
+    if min_offline_minutes < 0:
+        return tool_result({"success": False, "error": "min_offline_minutes must be >= 0"})
 
     watches = _load_watches()
-    watches[name] = {"ip": ip, "online": None}
+    watches[name] = {"ip": ip, "online": None, "changed_at": None, "min_offline_minutes": min_offline_minutes}
     _save_watches(watches)
     _ensure_worker()
-    return tool_result({"success": True, "name": name, "ip": ip})
+    return tool_result({"success": True, "name": name, "ip": ip, "min_offline_minutes": min_offline_minutes})
 
 
 def _handle_unwatch_device(args: dict, **_kw) -> str:

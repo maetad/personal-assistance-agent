@@ -45,6 +45,33 @@ class UpdateStateTests(unittest.TestCase):
         self.assertIn("connected", message)
         self.assertTrue(watch["online"])
 
+    def test_records_changed_at_on_every_call(self):
+        watch = {"ip": "192.168.0.42", "online": None}
+        dw._update_state("phone", watch, True, now=1000.0)
+        self.assertEqual(watch["changed_at"], 1000.0)
+
+    def test_missing_min_offline_minutes_defaults_to_always_notify(self):
+        watch = {"ip": "192.168.0.42", "online": False, "changed_at": 1000.0}
+        message = dw._update_state("phone", watch, True, now=1000.1)
+        self.assertIn("connected", message)
+
+    def test_reconnect_before_threshold_is_suppressed_but_state_still_updates(self):
+        watch = {"ip": "192.168.0.42", "online": False, "changed_at": 1000.0, "min_offline_minutes": 60}
+        message = dw._update_state("phone", watch, True, now=1000.0 + 30 * 60)
+        self.assertIsNone(message)
+        self.assertTrue(watch["online"])
+        self.assertEqual(watch["changed_at"], 1000.0 + 30 * 60)
+
+    def test_reconnect_after_threshold_notifies(self):
+        watch = {"ip": "192.168.0.42", "online": False, "changed_at": 1000.0, "min_offline_minutes": 60}
+        message = dw._update_state("phone", watch, True, now=1000.0 + 61 * 60)
+        self.assertIn("connected", message)
+
+    def test_disconnect_is_never_suppressed_by_threshold(self):
+        watch = {"ip": "192.168.0.42", "online": True, "changed_at": 1000.0, "min_offline_minutes": 60}
+        message = dw._update_state("phone", watch, False, now=1000.1)
+        self.assertIn("disconnected", message)
+
 
 class ValidIpv4Tests(unittest.TestCase):
     def test_accepts_valid_ip(self):
@@ -100,7 +127,20 @@ class HandlerTests(unittest.TestCase):
     def test_watch_device_persists_new_watch(self):
         result = json.loads(dw._handle_watch_device({"name": "phone", "ip": "192.168.0.42"}))
         self.assertTrue(result["success"])
-        self.assertEqual(dw._load_watches(), {"phone": {"ip": "192.168.0.42", "online": None}})
+        self.assertEqual(
+            dw._load_watches(),
+            {"phone": {"ip": "192.168.0.42", "online": None, "changed_at": None, "min_offline_minutes": 0}},
+        )
+
+    def test_watch_device_accepts_min_offline_minutes(self):
+        result = json.loads(dw._handle_watch_device({"name": "phone", "ip": "192.168.0.42", "min_offline_minutes": 60}))
+        self.assertTrue(result["success"])
+        self.assertEqual(dw._load_watches()["phone"]["min_offline_minutes"], 60)
+
+    def test_watch_device_rejects_negative_min_offline_minutes(self):
+        result = json.loads(dw._handle_watch_device({"name": "phone", "ip": "192.168.0.42", "min_offline_minutes": -1}))
+        self.assertFalse(result["success"])
+        self.assertEqual(dw._load_watches(), {})
 
     def test_unwatch_device_removes_existing_watch(self):
         dw._handle_watch_device({"name": "phone", "ip": "192.168.0.42"})
@@ -115,7 +155,10 @@ class HandlerTests(unittest.TestCase):
     def test_list_watched_devices_reports_current_state(self):
         dw._handle_watch_device({"name": "phone", "ip": "192.168.0.42"})
         result = json.loads(dw._handle_list_watched_devices({}))
-        self.assertEqual(result["devices"], [{"name": "phone", "ip": "192.168.0.42", "online": None}])
+        self.assertEqual(
+            result["devices"],
+            [{"name": "phone", "ip": "192.168.0.42", "online": None, "changed_at": None, "min_offline_minutes": 0}],
+        )
 
 
 class GuessSubnetTests(unittest.TestCase):

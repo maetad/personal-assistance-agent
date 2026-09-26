@@ -210,15 +210,12 @@ def _poll_once() -> None:
     watches = _load_watches()
     if not watches:
         return
-    changed = False
     for name, watch in watches.items():
         online = _check_online(watch["ip"])
         message = _update_state(name, watch, online)
         if message:
-            changed = True
             _notify(message)
-    if changed:
-        _save_watches(watches)
+    _save_watches(watches)
 
 
 def _worker_loop() -> None:

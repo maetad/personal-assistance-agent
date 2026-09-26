@@ -408,6 +408,15 @@ class PollOnceTests(unittest.TestCase):
         self.assertEqual(len(self._notified), 1)
         self.assertEqual(dw._load_watches()["phone"]["online"], False)
 
+    def test_first_check_persists_baseline_even_without_notifying(self):
+        dw._save_watches({"phone": {"ip": "192.168.0.42", "online": None}})
+        dw._check_online = lambda ip: True
+        dw._poll_once()
+        self.assertEqual(self._notified, [])
+        persisted = dw._load_watches()["phone"]
+        self.assertTrue(persisted["online"])
+        self.assertIsNotNone(persisted["changed_at"])
+
     def test_no_state_change_does_not_notify(self):
         dw._save_watches({"phone": {"ip": "192.168.0.42", "online": True}})
         dw._check_online = lambda ip: True

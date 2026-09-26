@@ -178,6 +178,70 @@ class ResolveHostnameTests(unittest.TestCase):
         self.assertIsNone(dw._resolve_hostname("192.168.0.42"))
 
 
+class RouterBaseUrlTests(unittest.TestCase):
+    def test_configured_host_wins(self):
+        ctx = unittest.mock.Mock()
+        ctx.get_config.return_value = "http://10.0.0.1"
+        self.assertEqual(dw._router_base_url(ctx, "192.168.0.0/24"), "http://10.0.0.1")
+
+    def test_falls_back_to_gateway_guess_from_subnet(self):
+        ctx = unittest.mock.Mock()
+        ctx.get_config.return_value = None
+        self.assertEqual(dw._router_base_url(ctx, "192.168.0.0/24"), "http://192.168.0.1")
+
+    def test_none_when_no_subnet_and_nothing_configured(self):
+        ctx = unittest.mock.Mock()
+        ctx.get_config.return_value = None
+        self.assertIsNone(dw._router_base_url(ctx, None))
+
+
+class FetchRouterHostnamesTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_get_router_client = dw._get_router_client
+
+    def tearDown(self):
+        dw._get_router_client = self._orig_get_router_client
+
+    def test_returns_empty_when_no_password_configured(self):
+        ctx = unittest.mock.Mock()
+        ctx.get_config.return_value = None
+        self.assertEqual(dw._fetch_router_hostnames(ctx, "192.168.0.0/24"), {})
+
+    def test_maps_ip_to_hostname_and_skips_blank_hostnames(self):
+        class FakeDevice:
+            def __init__(self, ipaddr, hostname):
+                self.ipaddr = ipaddr
+                self.hostname = hostname
+
+        class FakeStatus:
+            devices = [FakeDevice("192.168.0.42", "phone"), FakeDevice("192.168.0.7", "")]
+
+        class FakeRouter:
+            def get_status(self):
+                return FakeStatus()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        dw._get_router_client = lambda base_url, password, username: FakeRouter()
+        ctx = unittest.mock.Mock()
+        ctx.get_config.side_effect = lambda key, default=None: {"router_password": "secret"}.get(key, default)
+        result = dw._fetch_router_hostnames(ctx, "192.168.0.0/24")
+        self.assertEqual(result, {"192.168.0.42": "phone"})
+
+    def test_returns_empty_on_failure_instead_of_raising(self):
+        def _raise(base_url, password, username):
+            raise RuntimeError("boom")
+
+        dw._get_router_client = _raise
+        ctx = unittest.mock.Mock()
+        ctx.get_config.side_effect = lambda key, default=None: {"router_password": "secret"}.get(key, default)
+        self.assertEqual(dw._fetch_router_hostnames(ctx, "192.168.0.0/24"), {})
+
+
 class SweepSubnetTests(unittest.TestCase):
     def setUp(self):
         self._orig_check_online = dw._check_online
@@ -206,14 +270,17 @@ class ListConnectedDevicesHandlerTests(unittest.TestCase):
         self._orig_sweep = dw._sweep_subnet
         self._orig_resolve = dw._resolve_subnet
         self._orig_resolve_hostname = dw._resolve_hostname
+        self._orig_fetch_router_hostnames = dw._fetch_router_hostnames
         dw._resolve_subnet = lambda ctx: "192.168.0.0/24"
         dw._resolve_hostname = lambda ip: None
+        dw._fetch_router_hostnames = lambda ctx, subnet: {}
 
     def tearDown(self):
         dw._watches_path = self._orig_path_fn
         dw._sweep_subnet = self._orig_sweep
         dw._resolve_subnet = self._orig_resolve
         dw._resolve_hostname = self._orig_resolve_hostname
+        dw._fetch_router_hostnames = self._orig_fetch_router_hostnames
         self._tmpdir.cleanup()
 
     def test_marks_watched_online_device(self):
@@ -237,6 +304,14 @@ class ListConnectedDevicesHandlerTests(unittest.TestCase):
         dw._resolve_hostname = lambda ip: "phone" if ip == "192.168.0.42" else None
         result = json.loads(dw._handle_list_connected_devices({}))
         self.assertEqual(result["devices"][0]["hostname"], "phone")
+
+    def test_router_hostname_takes_priority_over_reverse_dns(self):
+        dw._save_watches({})
+        dw._sweep_subnet = lambda subnet: ["192.168.0.42"]
+        dw._fetch_router_hostnames = lambda ctx, subnet: {"192.168.0.42": "router-name"}
+        dw._resolve_hostname = lambda ip: "dns-name"
+        result = json.loads(dw._handle_list_connected_devices({}))
+        self.assertEqual(result["devices"][0]["hostname"], "router-name")
 
     def test_no_subnet_available_returns_error(self):
         dw._resolve_subnet = lambda ctx: None

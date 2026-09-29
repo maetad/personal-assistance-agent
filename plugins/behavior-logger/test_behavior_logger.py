@@ -313,6 +313,20 @@ class OnPreLlmCallTests(unittest.TestCase):
         self.assertIn("last_surfaced_at", sql)
         self.assertEqual(params, ("pan", "resting_heart_rate"))
 
+    def test_only_surfaces_proposal_raised_in_same_session(self):
+        conn = _FakeConn(rows=[("resting_heart_rate", {"value": 52})])
+        bl._db_connect = lambda **_kw: conn
+        bl._on_pre_llm_call(session_id="workout-topic")
+        select_sql, select_params = conn.cursor_obj.executed[0]
+        self.assertIn("session_id = %s", select_sql)
+        self.assertEqual(select_params, ("pan", "workout-topic"))
+
+    def test_no_session_id_skips_lookup(self):
+        conn = _FakeConn(rows=[("resting_heart_rate", {"value": 52})])
+        bl._db_connect = lambda **_kw: conn
+        self.assertIsNone(bl._on_pre_llm_call(session_id=None))
+        self.assertEqual(conn.cursor_obj.executed, [])
+
     def test_no_pending_proposal_returns_none(self):
         conn = _FakeConn(rows=[])
         bl._db_connect = lambda **_kw: conn
@@ -325,6 +339,46 @@ class OnPreLlmCallTests(unittest.TestCase):
 
         bl._db_connect = _boom
         self.assertIsNone(bl._on_pre_llm_call(session_id="s1"))
+
+
+class _FakeLLM:
+    def __init__(self, items):
+        self._items = items
+
+    def complete_structured(self, **_kw):
+        return type("R", (), {"parsed": {"items": self._items}})()
+
+
+class ProcessTurnProposalTests(unittest.TestCase):
+    def setUp(self):
+        self._orig_connect = bl._db_connect
+        self._orig_profile = bl._get_active_profile_name
+        bl._get_active_profile_name = lambda: "pan"
+
+    def tearDown(self):
+        bl._db_connect = self._orig_connect
+        bl._get_active_profile_name = self._orig_profile
+
+    def test_proposal_records_raising_session(self):
+        conn = _FakeConn(rows=[(1,)])
+        conn.cursor_obj.fetchall = lambda: []  # empty taxonomy; fetchone() supplies the observation id
+        bl._db_connect = lambda **_kw: conn
+        item = {
+            "kind": "structured",
+            "log_type": "watch_area",
+            "data": {"area": "Bangna"},
+            "proposed_fact_key": "watch_area",
+        }
+        ctx = type("Ctx", (), {"llm": _FakeLLM([item])})()
+        bl._process_turn(
+            ctx,
+            {"session_id": "flood-topic", "user_text": "u", "assistant_text": "a", "sent_at": datetime.now(timezone.utc)},
+        )
+        sql, params = next(
+            (s, p) for s, p in conn.cursor_obj.executed if "INSERT INTO fact_key_proposals" in s
+        )
+        self.assertIn("session_id", sql)
+        self.assertIn("flood-topic", params)
 
 
 class HandleListFactKeysTests(unittest.TestCase):

@@ -89,11 +89,15 @@ CREATE TABLE IF NOT EXISTS fact_key_proposals (
     example_value   JSONB NOT NULL,
     status          TEXT NOT NULL DEFAULT 'pending',
     last_surfaced_at TIMESTAMPTZ,
+    session_id      TEXT,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (profile_name, fact_key)
 )
 """
+FACT_KEY_PROPOSALS_SESSION_MIGRATION = (
+    "ALTER TABLE fact_key_proposals ADD COLUMN IF NOT EXISTS session_id TEXT"
+)
 
 CLASSIFY_ITEM_PROPERTIES = {
     "kind": {"type": "string", "enum": ["structured", "semantic"]},
@@ -363,6 +367,7 @@ def _ensure_schema() -> None:
                 cur.execute(FACT_TAXONOMY_DDL)
                 cur.execute(FACTS_DDL)
                 cur.execute(FACT_KEY_PROPOSALS_DDL)
+                cur.execute(FACT_KEY_PROPOSALS_SESSION_MIGRATION)
                 conn.commit()
             finally:
                 cur.execute("SELECT pg_advisory_unlock(%s)", (ADVISORY_LOCK_ID,))
@@ -409,12 +414,16 @@ _PROPOSAL_RESURFACE_COOLDOWN_SQL = "last_surfaced_at IS NULL OR last_surfaced_at
 
 def _on_pre_llm_call(session_id=None, **_kwargs) -> Optional[dict]:
     """Fires before the main agent's turn. Surfaces the oldest pending Fact Key Proposal
-    (if any, and not re-asked within the last day) as injected user-message context, so
+    raised in *this* session (if any, and not re-asked within the last day; a proposal from
+    another chat/topic is never raised here - it'd be an off-topic question) as injected
+    user-message context, so
     the agent raises it with the user on this turn - always a later turn than the one that
     raised it, since the proposal is only written by the background classifier after that
     earlier turn's response was already sent. Fails open (returns None) on any error or a
     slow/unreachable DB, via a short connect_timeout, so this never blocks the live turn.
     ponytail: no per-query statement_timeout yet - add one if a slow query is ever seen."""
+    if not session_id:
+        return None
     try:
         _ensure_schema()
         profile_name = _get_active_profile_name()
@@ -422,9 +431,10 @@ def _on_pre_llm_call(session_id=None, **_kwargs) -> Optional[dict]:
             with conn.cursor() as cur:
                 cur.execute(
                     "SELECT fact_key, example_value FROM fact_key_proposals "
-                    f"WHERE profile_name = %s AND status = 'pending' AND ({_PROPOSAL_RESURFACE_COOLDOWN_SQL}) "
+                    "WHERE profile_name = %s AND session_id = %s AND status = 'pending' "
+                    f"AND ({_PROPOSAL_RESURFACE_COOLDOWN_SQL}) "
                     "ORDER BY created_at ASC LIMIT 1",
-                    (profile_name,),
+                    (profile_name, session_id),
                 )
                 row = cur.fetchone()
             if not row:
@@ -496,12 +506,13 @@ def _process_turn(ctx, turn: dict) -> None:
                         if proposed_key:
                             cur.execute(
                                 "INSERT INTO fact_key_proposals "
-                                "(profile_name, fact_key, example_value, updated_at) "
-                                "VALUES (%s, %s, %s, now()) "
+                                "(profile_name, fact_key, example_value, session_id, updated_at) "
+                                "VALUES (%s, %s, %s, %s, now()) "
                                 "ON CONFLICT (profile_name, fact_key) DO UPDATE SET "
-                                "example_value = EXCLUDED.example_value, updated_at = now() "
+                                "example_value = EXCLUDED.example_value, "
+                                "session_id = EXCLUDED.session_id, updated_at = now() "
                                 "WHERE fact_key_proposals.status = 'pending'",
-                                (profile_name, proposed_key, data_json),
+                                (profile_name, proposed_key, data_json, turn["session_id"] or None),
                             )
                 elif kind == "semantic" and item.get("content"):
                     vec = _embed(item["content"])
